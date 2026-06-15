@@ -799,9 +799,7 @@ class CasesNode(ASTNode):
 
     def _render_brace(self, height: int, unicode_mode: bool) -> List[str]:
         if height == 1:
-            return ['{']
-        if height == 2:
-            return ['{', '{']
+            return ['{ ']
 
         brace = []
         mid = height // 2
@@ -809,23 +807,34 @@ class CasesNode(ASTNode):
         if unicode_mode:
             for i in range(height):
                 if i == 0:
-                    brace.append('⎧')
+                    brace.append('⎧ ')
                 elif i == mid:
-                    brace.append('⎨')
+                    brace.append('⎨ ')
                 elif i == height - 1:
-                    brace.append('⎩')
+                    brace.append('⎩ ')
                 else:
-                    brace.append('⎪')
+                    brace.append('⎪ ')
         else:
-            for i in range(height):
-                if i == 0:
-                    brace.append('{')
-                elif i == height - 1:
-                    brace.append('{')
-                else:
-                    brace.append('|')
+            if height == 2:
+                brace = ['/ ', '\\ ']
+            elif height == 3:
+                brace = ['/ ', '{ ', '\\ ']
+            elif height == 4:
+                brace = ['/ ', '| ', '{ ', '\\ ']
+            elif height == 5:
+                brace = [' / ', '|  ', '{  ', '|  ', ' \\ ']
+            else:
+                top_half = mid
+                bottom_half = height - mid
+                for i in range(top_half):
+                    indent = top_half - 1 - i
+                    brace.append(' ' * indent + '/ ' + ' ' * (top_half - 1 - indent))
+                brace.append('{ ' + ' ' * (top_half - 1))
+                for i in range(bottom_half - 1):
+                    indent = i
+                    brace.append(' ' * indent + '\\ ' + ' ' * (bottom_half - 2 - indent))
 
-        return [b.ljust(2) for b in brace]
+        return [b.rstrip() + ' ' for b in brace]
 
 
 @dataclass
@@ -1236,7 +1245,7 @@ class Parser:
     def parse_expr(self) -> ASTNode:
         items = []
         stop_types = ('EOF', 'AMP', 'SEMI', 'PIPE')
-        stop_cmds = ('end',)
+        stop_cmds = ('end', '\\\\')
 
         while True:
             tok = self.current()
@@ -1485,7 +1494,6 @@ class Parser:
         numbered = (env_name != 'align*')
         rows: List[List[ASTNode]] = []
         current_row: List[ASTNode] = []
-        current_cell_items: List[ASTNode] = []
 
         while not (self.current().type == 'CMD' and self.current().value == 'end'):
             tok = self.current()
@@ -1494,33 +1502,19 @@ class Parser:
 
             if tok.type == 'AMP':
                 self.consume()
-                if current_cell_items:
-                    current_row.append(ExprListNode(current_cell_items) if len(current_cell_items) > 1 else current_cell_items[0])
-                else:
-                    current_row.append(NumberNode(""))
-                current_cell_items = []
                 continue
 
             if tok.type == 'SEMI' or (tok.type == 'CMD' and tok.value == '\\\\'):
                 self.consume()
-                if current_cell_items:
-                    current_row.append(ExprListNode(current_cell_items) if len(current_cell_items) > 1 else current_cell_items[0])
-                else:
-                    current_row.append(NumberNode(""))
                 if current_row:
                     rows.append(current_row)
                 current_row = []
-                current_cell_items = []
                 continue
 
-            item = self.parse_atom()
-            if item is not None:
-                current_cell_items.append(item)
-            else:
-                self.consume()
+            cell = self._parse_cell_content()
+            if cell is not None:
+                current_row.append(cell)
 
-        if current_cell_items:
-            current_row.append(ExprListNode(current_cell_items) if len(current_cell_items) > 1 else current_cell_items[0])
         if current_row:
             rows.append(current_row)
 
@@ -1529,8 +1523,8 @@ class Parser:
 
     def parse_cases_env(self) -> ASTNode:
         rows: List[Tuple[ASTNode, ASTNode]] = []
-        current_expr_items: List[ASTNode] = []
-        current_cond_items: List[ASTNode] = []
+        expr_parts: List[ASTNode] = []
+        cond_parts: List[ASTNode] = []
         in_condition = False
 
         while not (self.current().type == 'CMD' and self.current().value == 'end'):
@@ -1545,26 +1539,24 @@ class Parser:
 
             if tok.type == 'SEMI' or (tok.type == 'CMD' and tok.value == '\\\\'):
                 self.consume()
-                expr = ExprListNode(current_expr_items) if len(current_expr_items) > 1 else (current_expr_items[0] if current_expr_items else NumberNode(""))
-                cond = ExprListNode(current_cond_items) if len(current_cond_items) > 1 else (current_cond_items[0] if current_cond_items else NumberNode(""))
+                expr = ExprListNode(expr_parts) if len(expr_parts) > 1 else (expr_parts[0] if expr_parts else NumberNode(""))
+                cond = ExprListNode(cond_parts) if len(cond_parts) > 1 else (cond_parts[0] if cond_parts else NumberNode(""))
                 rows.append((expr, cond))
-                current_expr_items = []
-                current_cond_items = []
+                expr_parts = []
+                cond_parts = []
                 in_condition = False
                 continue
 
-            item = self.parse_atom()
-            if item is not None:
+            cell = self._parse_cell_content()
+            if cell is not None:
                 if in_condition:
-                    current_cond_items.append(item)
+                    cond_parts.append(cell)
                 else:
-                    current_expr_items.append(item)
-            else:
-                self.consume()
+                    expr_parts.append(cell)
 
-        if current_expr_items or current_cond_items:
-            expr = ExprListNode(current_expr_items) if len(current_expr_items) > 1 else (current_expr_items[0] if current_expr_items else NumberNode(""))
-            cond = ExprListNode(current_cond_items) if len(current_cond_items) > 1 else (current_cond_items[0] if current_cond_items else NumberNode(""))
+        if expr_parts or cond_parts:
+            expr = ExprListNode(expr_parts) if len(expr_parts) > 1 else (expr_parts[0] if expr_parts else NumberNode(""))
+            cond = ExprListNode(cond_parts) if len(cond_parts) > 1 else (cond_parts[0] if cond_parts else NumberNode(""))
             rows.append((expr, cond))
 
         self._consume_end('cases')
@@ -1572,26 +1564,27 @@ class Parser:
 
     def parse_equation_env(self, env_name: str) -> ASTNode:
         numbered = (env_name != 'equation*')
-        expr_items: List[ASTNode] = []
-
-        while not (self.current().type == 'CMD' and self.current().value == 'end'):
-            tok = self.current()
-            if tok.type == 'EOF':
-                break
-
-            if tok.type == 'SEMI' or (tok.type == 'CMD' and tok.value == '\\\\'):
-                self.consume()
-                continue
-
-            item = self.parse_atom()
-            if item is not None:
-                expr_items.append(item)
-            else:
-                self.consume()
-
+        content = self.parse_expr()
         self._consume_end(env_name)
-        content = ExprListNode(expr_items) if len(expr_items) > 1 else (expr_items[0] if expr_items else NumberNode(""))
+        if content is None or (isinstance(content, NumberNode) and content.value == '0'):
+            content = NumberNode("")
         return EquationNode(content, number=1 if numbered else None)
+
+    def _parse_cell_content(self) -> Optional[ASTNode]:
+        """Parse cell content that may start with a leading operator like = or >"""
+        tok = self.current()
+        if tok.type == 'OP' and tok.value in '=<>' :
+            op_tok = self.consume()
+            op_node = OperatorNode(op_tok.value)
+            rest = self.parse_expr()
+            if rest is not None and not (isinstance(rest, NumberNode) and rest.value == '0'):
+                return ExprListNode([op_node, rest])
+            return op_node
+
+        result = self.parse_expr()
+        if isinstance(result, NumberNode) and result.value == '0':
+            return None
+        return result
 
     def parse_matrix_env(self, env_name: str) -> ASTNode:
         rows: List[List[ASTNode]] = []
